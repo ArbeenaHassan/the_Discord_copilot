@@ -9,6 +9,22 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
+// Cache variables to reduce database overhead
+let cachedAllowedChannels = null;
+let lastAllowedChannelsFetch = 0;
+const CHANNELS_CACHE_TTL_MS = 30 * 1000; // 30 seconds
+
+let cachedSystemInstructions = null;
+let lastSystemInstructionsFetch = 0;
+const INSTRUCTIONS_CACHE_TTL_MS = 60 * 1000; // 60 seconds
+
+function invalidateCache() {
+    cachedAllowedChannels = null;
+    lastAllowedChannelsFetch = 0;
+    cachedSystemInstructions = null;
+    lastSystemInstructionsFetch = 0;
+}
+
 // Search for relevant content using vector similarity
 async function searchKnowledge(queryEmbedding) {
     try {
@@ -30,8 +46,13 @@ async function searchKnowledge(queryEmbedding) {
     }
 }
 
-// Get system instructions from admin config
-async function getSystemInstructions() {
+// Get system instructions from admin config (with in-memory TTL cache)
+async function getSystemInstructions(forceRefresh = false) {
+    const now = Date.now();
+    if (!forceRefresh && cachedSystemInstructions && (now - lastSystemInstructionsFetch < INSTRUCTIONS_CACHE_TTL_MS)) {
+        return cachedSystemInstructions;
+    }
+
     try {
         const { data, error } = await supabase
             .from('admin_config')
@@ -41,16 +62,24 @@ async function getSystemInstructions() {
 
         if (error) {
             console.error('Error fetching system instructions:', error);
-            return 'You are a helpful assistant.';
+            return cachedSystemInstructions || 'You are a helpful assistant.';
         }
 
-        return data?.system_instructions || 'You are a helpful assistant.';
+        cachedSystemInstructions = data?.system_instructions || 'You are a helpful assistant.';
+        lastSystemInstructionsFetch = now;
+        return cachedSystemInstructions;
     } catch (error) {
-        return 'You are a helpful assistant.';
+        return cachedSystemInstructions || 'You are a helpful assistant.';
     }
 }
-// Get allowed channels
-async function getAllowedChannels() {
+
+// Get allowed channels (with in-memory TTL cache)
+async function getAllowedChannels(forceRefresh = false) {
+    const now = Date.now();
+    if (!forceRefresh && cachedAllowedChannels && (now - lastAllowedChannelsFetch < CHANNELS_CACHE_TTL_MS)) {
+        return cachedAllowedChannels;
+    }
+
     try {
         const { data, error } = await supabase
             .from('allowed_channels')
@@ -58,13 +87,15 @@ async function getAllowedChannels() {
 
         if (error) {
             console.error('Error fetching allowed channels:', error);
-            return [];
+            return cachedAllowedChannels || [];
         }
 
-        return data.map(ch => ch.channel_id);
+        cachedAllowedChannels = data.map(ch => ch.channel_id);
+        lastAllowedChannelsFetch = now;
+        return cachedAllowedChannels;
     } catch (error) {
         console.error('Unexpected error in getAllowedChannels:', error);
-        return [];
+        return cachedAllowedChannels || [];
     }
 }
 
@@ -121,5 +152,6 @@ module.exports = {
     getSystemInstructions,
     getAllowedChannels,
     getConversationMemory,
-    updateConversationMemory
+    updateConversationMemory,
+    invalidateCache
 };
